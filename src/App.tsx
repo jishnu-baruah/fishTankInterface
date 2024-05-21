@@ -1,75 +1,95 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, Button, TouchableOpacity, Image } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { StyleSheet, Text, View, Switch, TouchableOpacity, TextInput } from 'react-native';
 import Video from 'react-native-video';
 
+
+const SocketStatusIndicator = ({ connected }) => {
+  return (
+    <View style={[styles.socketStatus, { backgroundColor: connected ? '#4CAF50' : '#F44336' }]}>
+    </View>
+  );
+};
+
 const App = () => {
-  const [ip, setIp] = useState("192.168.70.37");
-  const [data, setData] = useState(null);
-  const [feedReminder, setFeedReminder] = useState(false);
-  const [waterChangeReminder, setWaterChangeReminder] = useState(false);
-  const [feedCountdown, setFeedCountdown] = useState(1800); // 30 minutes in seconds
-  const [waterChangeCountdown, setWaterChangeCountdown] = useState(1140); // 19 minutes in seconds
+  console.disableYellowBox = true;
+
+  const [ip, setIp] = useState("192.168.47.212");
+  const [data, setData] = useState({ temperature: '--', water_level: '--' });
+  const [light, setLight] = useState(false);
+  const [pumps, setPumps] = useState(false);
+  const [dispenser, setDispenser] = useState(false);
+  const [feedingTime, setFeedingTime] = useState('');
+  const [waterChangeInterval, setWaterChangeInterval] = useState('');
+  const [socketConnected, setSocketConnected] = useState(false);
+  const websocket = useRef(null);
 
   useEffect(() => {
-    const intervalId = setInterval(() => {
-      fetchData();
-      updateCountdowns();
-    }, 1000);
+    initWebSocket();
+    fetchData();
+    const intervalId = setInterval(fetchData, 1000);
 
-    return () => clearInterval(intervalId);
+    return () => {
+      clearInterval(intervalId);
+      if (websocket.current) {
+        websocket.current.close();
+      }
+    };
   }, []);
 
+  const initWebSocket = () => {
+    websocket.current = new WebSocket(`ws://${ip}:81/`);
+    websocket.current.onopen = () => {
+      console.log('WebSocket connection opened');
+      setSocketConnected(true);
+    };
+    websocket.current.onclose = () => {
+      console.log('WebSocket connection closed');
+      setTimeout(initWebSocket, 2000);
+      setSocketConnected(false);
+    };
+    websocket.current.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      setData(data);
+    };
+  };
+
   const fetchData = () => {
-    fetch('http://' + ip + '/data')
+    fetch(`http://${ip}/data`)
       .then(response => response.json())
       .then(data => setData(data))
       .catch(error => console.error('Error fetching data:', error));
   };
 
-  const handleRefresh = () => {
-    console.log('Refreshing data... from http://' + ip + '/data');
-    fetchData();
-  };
-
-  const calculateWaterLevel = (distance) => {
-    if (distance <= 5) {
-      return '100%';
-    } else if (distance >= 17) {
-      return '0%';
-    } else {
-      return `${((17 - distance) / 12) * 100}%`;
+  const togglePin = (pin) => {
+    if (!websocket.current || websocket.current.readyState !== WebSocket.OPEN) {
+      console.error('WebSocket connection is not open.');
+      return;
     }
+
+    websocket.current.send(pin);
   };
 
-  const renderDataCard = (label, value) => (
-    <View style={styles.card}>
-      <Text style={styles.cardLabel}>{label}</Text>
-      <Text style={styles.cardValue}>{value}</Text>
-    </View>
-  );
-
-  const formatTime = (timeInSeconds) => {
-    const minutes = Math.floor(timeInSeconds / 60);
-    const seconds = timeInSeconds % 60;
-    return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+  const handleToggle = (setState, state, pin) => {
+    setState(!state);
+    togglePin(state ? `${pin}_off` : `${pin}_on`);
   };
 
-  const updateCountdowns = () => {
-    setFeedCountdown((prevCountdown) => {
-      if (prevCountdown === 0) {
-        setFeedReminder(true);
-        return 0;
-      }
-      return prevCountdown - 1;
-    });
+  const setFeedingTimeHandler = () => {
+    if (!feedingTime) {
+      console.error('Feeding time is required.');
+      return;
+    }
 
-    setWaterChangeCountdown((prevCountdown) => {
-      if (prevCountdown === 0) {
-        setWaterChangeReminder(true);
-        return 0;
-      }
-      return prevCountdown - 1;
-    });
+    websocket.current.send(JSON.stringify({ action: 'setFeedingTime', time: feedingTime }));
+  };
+
+  const setWaterChangeIntervalHandler = () => {
+    if (!waterChangeInterval) {
+      console.error('Water change interval is required.');
+      return;
+    }
+
+    websocket.current.send(JSON.stringify({ action: 'setWaterChangeInterval', interval: waterChangeInterval }));
   };
 
   return (
@@ -84,112 +104,191 @@ const App = () => {
         style={styles.video}
         fullscreenOrientation={'portrait'}
       />
-      <Text style={styles.title}>Tank Status</Text>
-      {data ? (
-        <View style={styles.cardContainer}>
-          {renderDataCard('Temperature', `${data.temperature} °C`)}
-          {renderDataCard('Water Level', calculateWaterLevel(data.water_level))}
+      <Text style={styles.title}>Fish Tank</Text>
+      <View style={styles.sensorData}>
+        <View style={{ alignItems: 'center' }}>
+          <Text style={[styles.sensorText, { color: 'white' }]}>Temperature</Text>
+          <Text style={{ fontSize: 16, color: 'white' }}>{data.temperature} °C</Text>
         </View>
-      ) : (
-        <Text style={styles.loadingText}>Loading data...</Text>
-      )}
-      <View style={{ height: 200, marginBottom: 250 }}></View>
-      <View style={styles.reminderContainer}>
-        <Image source={require('./assets/reminder.png')} style={styles.reminderIcon} />
-        <Text style={styles.reminderText}>{!feedReminder ? `Feed in: ${formatTime(feedCountdown)}` : 'Reminder: Feed the fish!'}</Text>
+        <View style={{ alignItems: 'center' }}>
+          <Text style={[styles.sensorText, { color: 'white' }]}>Distance</Text>
+          <Text style={{ fontSize: 16, color: 'white' }}>{data.water_level} cm</Text>
+        </View>
       </View>
-      <View style={styles.reminderContainer}>
-        <Image source={require('./assets/reminder.png')} style={styles.reminderIcon} />
-        <Text style={styles.reminderText}>{!waterChangeReminder ? `Water change in: ${formatTime(waterChangeCountdown)}` : 'Reminder: Change the water!'}</Text>
+      <View style={styles.controls}>
+        <View style={styles.control}>
+          <Switch
+            value={light}
+            onValueChange={() => handleToggle(setLight, light, 'pin1')}
+            style={{ transform: [{ scale: 1.5 }] }} 
+          />
+          <Text style={[styles.controlLabel, { color: 'white' }]}>Light</Text>
+        </View>
+        <View style={styles.control}>
+          <Switch
+            value={pumps}
+            onValueChange={() => handleToggle(setPumps, pumps, 'pin2')}
+            style={{ transform: [{ scale: 1.5 }] }} 
+          />
+          <Text style={[styles.controlLabel, { color: 'white' }]}>Pumps</Text>
+        </View>
+        <View style={styles.control}>
+          <Switch
+            value={dispenser}
+            onValueChange={() => handleToggle(setDispenser, dispenser, 'pin3')}
+            style={{ transform: [{ scale: 1.5 }] }} 
+          />
+          <Text style={[styles.controlLabel, { color: 'white' }]}>Dispenser</Text>
+        </View>
       </View>
-      <View style={styles.buttonContainer}>
-        <TouchableOpacity style={styles.button} onPress={handleRefresh}>
-          <Text style={styles.buttonText}>Refresh</Text>
+
+      <View style={styles.timeSettings}>
+        <TextInput
+          style={styles.input}
+          placeholder="Feeding Time(HH:MM)"
+          value={feedingTime}
+          onChangeText={setFeedingTime}
+          placeholderTextColor="white"
+        />
+        <TouchableOpacity style={styles.button} onPress={setFeedingTimeHandler}>
+          <Text style={styles.buttonText}> + </Text>
         </TouchableOpacity>
+      </View>
+      <View style={styles.timeSettings}>
+        <TextInput
+          style={styles.input}
+          placeholder="Pump Interval(hours)"
+          keyboardType="numeric"
+          value={waterChangeInterval}
+          onChangeText={setWaterChangeInterval}
+          placeholderTextColor="white"
+        />
+        <TouchableOpacity style={styles.button} onPress={setWaterChangeIntervalHandler}>
+          <Text style={styles.buttonText}> + </Text>
+        </TouchableOpacity>
+      </View>
+      <View style={styles.ipContainer}>
+        <TextInput
+          style={styles.ipInput}
+          placeholder="Enter IP address"
+          value={ip}
+          onChangeText={setIp}
+        />
+        <View style={{ marginBottom: 40 }}></View>
+        <SocketStatusIndicator connected={socketConnected} />
       </View>
     </View>
   );
 };
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    padding: 20,
+    backgroundColor: '#fff',
     alignItems: 'center',
-    backgroundColor: '#0d0d47', // Set background color to transparent
-    zIndex: -1, // Push background behind other content
   },
   title: {
-    fontSize: 24,
+    fontSize: 32,
     fontWeight: 'bold',
     marginBottom: 20,
-    marginTop: 10,
     color: 'white',
   },
-  loadingText: {
-    fontSize: 18,
+  controls: {
+    justifyContent: 'center',
     marginBottom: 20,
-    color: 'white',
   },
-  cardContainer: {
+  control: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    width: '100%',
-    marginBottom: 20,
-  },
-  card: {
-    padding: 20,
-    borderRadius: 10,
     alignItems: 'center',
-    width: '45%', // Adjust width for spacing between cards
-    // backgroundColor: '#2196F3',
-  },
-  cardLabel: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: 'white',
+    marginHorizontal: 10,
     marginBottom: 10,
   },
-  cardValue: {
+  controlLabel: {
+    marginLeft: 10,
     fontSize: 18,
+  },
+  sensorData: {
+    marginBottom: 20,
+    flexDirection: 'row',
+  },
+  sensorText: {
+    fontSize: 24,
+    marginBottom: 5,
+    color: 'white',
+    marginHorizontal: 30,
+    fontWeight: 'bold',
+  },
+  timeSettings: {
+    marginBottom: 30,
+    width: '80%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderColor: '#ccc',
+
+    borderRadius: 10,
+  },
+  input: {
+    // borderWidth: 1,
+    // borderColor: '#ccc',
+    // padding: 10,
+    marginHorizontal: 10,
+    width: '60%',
+    borderRadius: 10,
     color: 'white',
   },
-  buttonContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-  },
   button: {
-    backgroundColor: '#2979FF',
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: 20,
+    // backgroundColor: '#2979FF',
+
+    // borderWidth: 1,
+    borderColor: '#ccc',
+    // padding: 10,
+    width: 25,
+    borderRadius: 30,
     marginHorizontal: 10,
+    marginLeft: 45,
+  },
+  buttonText: {
+    fontSize: 30,
+    color: 'white',
   },
   video: {
     position: 'absolute',
-    zIndex: -1,
     top: 0,
     left: 0,
     bottom: 0,
     right: 0,
   },
-  buttonText: {
-    fontSize: 18,
+  ipInput: {
+    // padding: 10,
+    // width: '60%',
+
+    borderRadius: 10,
+    textAlign: 'center',
     color: 'white',
   },
-  reminderContainer: {
-    flexDirection: 'row',
+  ipContainer: {
+    marginBottom: 20,
+    width: '80%',
     alignItems: 'center',
-    marginBottom: 10,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#ccc',
+    // padding: 10,
+
+    borderRadius: 10,
   },
-  reminderIcon: {
+  socketStatus: {
     width: 20,
     height: 20,
-    marginRight: 10,
-  },
-  reminderText: {
-    fontSize: 16,
-    color: 'white',
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 30,
   },
 });
+
 
 export default App;
